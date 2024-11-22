@@ -56,19 +56,25 @@
         )
         (asserts! (>= initial-stake u0) (err ERR-INVALID-STAKE-AMOUNT))
         (asserts! (is-none (map-get? trivia-game-records new-game-id)) (err ERR-TRIVIA-GAME-EXISTS))
-        (try! (stx-transfer? initial-stake tx-sender (as-contract tx-sender)))
         
-        (map-set trivia-game-records new-game-id {
-            game-creator: tx-sender,
-            trivia-question: trivia-question,
-            correct-answer: correct-answer,
-            total-prize-pool: initial-stake,
-            game-active-status: true,
-            winning-player: none
-        })
-        
-        (var-set trivia-game-counter (+ new-game-id u1))
-        (ok new-game-id)
+        ;; Handle STX transfer first
+        (match (stx-transfer? initial-stake tx-sender (as-contract tx-sender))
+            success
+            (begin
+                (map-set trivia-game-records new-game-id {
+                    game-creator: tx-sender,
+                    trivia-question: trivia-question,
+                    correct-answer: correct-answer,
+                    total-prize-pool: initial-stake,
+                    game-active-status: true,
+                    winning-player: none
+                })
+                
+                (var-set trivia-game-counter (+ new-game-id u1))
+                (ok new-game-id)
+            )
+            error (err ERR-INSUFFICIENT-STX-BALANCE)
+        )
     )
 )
 
@@ -83,18 +89,22 @@
         (asserts! (get game-active-status current-game) (err ERR-TRIVIA-GAME-ENDED))
         (asserts! (>= participation-stake u0) (err ERR-INVALID-STAKE-AMOUNT))
         
-        (try! (stx-transfer? participation-stake tx-sender (as-contract tx-sender)))
-        
-        (map-set participant-submission-records 
-            { trivia-game-id: trivia-game-id, participant-address: tx-sender }
-            { submitted-answer: participant-answer, submission-timestamp: block-height }
+        (match (stx-transfer? participation-stake tx-sender (as-contract tx-sender))
+            success
+            (begin
+                (map-set participant-submission-records 
+                    { trivia-game-id: trivia-game-id, participant-address: tx-sender }
+                    { submitted-answer: participant-answer, submission-timestamp: block-height }
+                )
+                
+                (map-set trivia-game-records trivia-game-id
+                    (merge current-game { total-prize-pool: (+ (get total-prize-pool current-game) participation-stake) })
+                )
+                
+                (ok true)
+            )
+            error (err ERR-INSUFFICIENT-STX-BALANCE)
         )
-        
-        (map-set trivia-game-records trivia-game-id
-            (merge current-game { total-prize-pool: (+ (get total-prize-pool current-game) participation-stake) })
-        )
-        
-        (ok true)
     )
 )
 
@@ -115,15 +125,15 @@
         )
         
         ;; Transfer prize pool to winner
-        (as-contract
+        (match (as-contract
             (stx-transfer? 
                 (get total-prize-pool current-game)
                 tx-sender
                 (default-to (get game-creator current-game) (get winning-player current-game))
-            )
+            ))
+            success (ok true)
+            error (err ERR-INSUFFICIENT-STX-BALANCE)
         )
-        
-        (ok true)
     )
 )
 
@@ -145,21 +155,23 @@
         (asserts! (is-eq tx-sender (var-get contract-administrator)) (err ERR-UNAUTHORIZED-ACCESS))
         
         ;; Return funds to players
-        (as-contract
+        (match (as-contract
             (stx-transfer? 
                 (get total-prize-pool current-game)
                 tx-sender
                 (get game-creator current-game)
+            ))
+            success
+            (begin
+                (map-set trivia-game-records trivia-game-id
+                    (merge current-game {
+                        game-active-status: false,
+                        total-prize-pool: u0
+                    })
+                )
+                (ok true)
             )
+            error (err ERR-INSUFFICIENT-STX-BALANCE)
         )
-        
-        (map-set trivia-game-records trivia-game-id
-            (merge current-game {
-                game-active-status: false,
-                total-prize-pool: u0
-            })
-        )
-        
-        (ok true)
     )
 )
